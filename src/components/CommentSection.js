@@ -16,12 +16,11 @@ export default function CommentSection() {
   useEffect(() => {
     fetch("/api/comments")
       .then((res) => res.json())
-      .then(setComments);
+      .then((data) => setComments(data || []));
   }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-
     setNameError("");
     setCommentError("");
 
@@ -43,16 +42,14 @@ export default function CommentSection() {
     });
     const newComment = await res.json();
 
-    // Recursive function to add reply anywhere in nested comments
     const addReply = (arr) =>
       arr.map((c) => {
-        if (c.id === replyingTo) return { ...c, replies: [...c.replies, newComment] };
-        if (c.replies.length > 0) return { ...c, replies: addReply(c.replies) };
+        if (c.id === replyingTo) return { ...c, replies: [newComment, ...(c.replies || [])] };
+        if (c.replies && c.replies.length > 0) return { ...c, replies: addReply(c.replies) };
         return c;
       });
 
-    setComments((prev) => (replyingTo ? addReply(prev) : [...prev, newComment]));
-
+    setComments((prev) => (replyingTo ? addReply(prev) : [newComment, ...prev]));
     setInput("");
     setReplyingTo(null);
   };
@@ -69,6 +66,16 @@ export default function CommentSection() {
     setTimeout(() => setClickedButton(null), 200);
   };
 
+  const handleEdit = async (id, text) => {
+    const res = await fetch("/api/comments", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, action: "edit", text }),
+    });
+    const updated = await res.json();
+    setComments(updated);
+  };
+
   const handleDelete = async (id) => {
     await fetch("/api/comments", {
       method: "DELETE",
@@ -79,9 +86,30 @@ export default function CommentSection() {
     const removeComment = (arr) =>
       arr
         .filter((c) => !(c.id === id && c.author === author))
-        .map((c) => ({ ...c, replies: removeComment(c.replies) }));
+        .map((c) => ({ ...c, replies: removeComment(c.replies || []) }));
 
     setComments((prev) => removeComment(prev));
+  };
+
+  // timeAgo helper
+  const timeAgo = (iso) => {
+    if (!iso) return "";
+    const diff = Date.now() - new Date(iso).getTime();
+    const s = Math.floor(diff / 1000);
+    if (s < 5) return "just now";
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 3600);
+    if (h < 24) return `${h}h`;
+    const d = Math.floor(h / 86400);
+    if (d < 7) return `${d}d`;
+    const w = Math.floor(d / 604800);
+    if (w < 5) return `${w}w`;
+    const mo = Math.floor(d / 2592000);
+    if (mo < 12) return `${mo}mo`;
+    const y = Math.floor(d / 31536000);
+    return `${y}y`;
   };
 
   return (
@@ -113,37 +141,47 @@ export default function CommentSection() {
           {commentError && <span className="text-red-600 text-sm mt-1">{commentError}</span>}
         </div>
 
-        <button
-          type="submit"
-          className="bg-blue-600 text-white py-1 px-3 rounded hover:bg-blue-700 transition"
-        >
-          {replyingTo ? "Reply" : "Post"}
-        </button>
-
-        {replyingTo && (
-          <button
-            type="button"
-            className="bg-blue-600 text-white py-1 px-3 rounded hover:bg-blue-700 transition"
-            onClick={() => setReplyingTo(null)}
-          >
-            Cancel reply
+        <div className="flex gap-2">
+          <button type="submit" className="bg-blue-600 text-white py-1 px-3 rounded hover:bg-blue-700 transition">
+            {replyingTo ? "Reply" : "Post"}
           </button>
-        )}
+
+          {replyingTo && (
+            <button
+              type="button"
+              className="bg-gray-300 text-black py-1 px-3 rounded hover:bg-gray-400 transition"
+              onClick={() => setReplyingTo(null)}
+            >
+              Cancel reply
+            </button>
+          )}
+        </div>
       </form>
 
       <CommentList
         comments={comments}
         onReaction={handleReaction}
         onReply={(id) => setReplyingTo(id)}
+        onEdit={handleEdit}
         onDelete={handleDelete}
         currentAuthor={author}
         clickedButton={clickedButton}
+        timeAgo={timeAgo}
       />
     </div>
   );
 }
 
-function CommentList({ comments, onReaction, onReply, onDelete, currentAuthor, clickedButton }) {
+// ---------- CommentList ----------
+function CommentList({ comments, onReaction, onReply, onEdit, onDelete, currentAuthor, clickedButton, timeAgo }) {
+  const [collapsed, setCollapsed] = useState({});
+  const [editing, setEditing] = useState(null);
+  const [editText, setEditText] = useState("");
+
+  const toggleCollapse = (id) => setCollapsed((p) => ({ ...p, [id]: !p[id] }));
+
+  if (!comments || comments.length === 0) return null;
+
   return (
     <div className="space-y-3">
       <AnimatePresence>
@@ -155,29 +193,59 @@ function CommentList({ comments, onReaction, onReply, onDelete, currentAuthor, c
             exit={{ opacity: 0, scale: 0.9 }}
             className="border rounded p-3 bg-white shadow"
           >
-            <p className="text-black">
-              <strong>{c.author}</strong>: {c.text}
-            </p>
+            <div className="flex justify-between items-start">
+              <div>
+                <p className="text-black">
+                  <strong>{c.author}</strong>{" "}
+                  <span className="text-gray-500 text-xs ml-2">{timeAgo(c.createdAt)}</span>
+                </p>
+                {editing === c.id ? (
+                  <div className="mt-2">
+                    <textarea
+                      value={editText}
+                      onChange={(e) => setEditText(e.target.value)}
+                      className="border p-2 rounded text-black w-full"
+                    />
+                    <div className="flex gap-2 mt-2">
+                      <button
+                        onClick={async () => {
+                          await onEdit(c.id, editText);
+                          setEditing(null);
+                        }}
+                        className="bg-green-500 text-white px-2 py-1 rounded"
+                      >
+                        Save
+                      </button>
+                      <button onClick={() => setEditing(null)} className="bg-gray-300 px-2 py-1 rounded">
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-black mt-1">{c.text}</p>
+                )}
+              </div>
+            </div>
 
             <div className="flex gap-2 mt-2 text-sm">
               <motion.button
                 onClick={() => onReaction(c.id, "like")}
                 className="flex items-center gap-1 bg-blue-100 hover:bg-blue-200 text-blue-700 px-2 py-1 rounded transition"
-                animate={clickedButton === c.id + "like" ? { scale: [1, 1.3, 1] } : { scale: 1 }}
-                transition={{ duration: 0.2 }}
+                animate={clickedButton === c.id + "like" ? { scale: [1, 1.25, 1] } : { scale: 1 }}
+                transition={{ duration: 0.18 }}
               >
                 <Image src="/like.svg" alt="Like" width={16} height={16} />
-                <span>{c.likes}</span>
+                <span>{c.likes || 0}</span>
               </motion.button>
 
               <motion.button
                 onClick={() => onReaction(c.id, "dislike")}
                 className="flex items-center gap-1 bg-gray-100 hover:bg-gray-200 text-gray-700 px-2 py-1 rounded transition"
-                animate={clickedButton === c.id + "dislike" ? { scale: [1, 1.3, 1] } : { scale: 1 }}
-                transition={{ duration: 0.2 }}
+                animate={clickedButton === c.id + "dislike" ? { scale: [1, 1.25, 1] } : { scale: 1 }}
+                transition={{ duration: 0.18 }}
               >
                 <Image src="/dislike.svg" alt="Dislike" width={16} height={16} />
-                <span>{c.dislikes}</span>
+                <span>{c.dislikes || 0}</span>
               </motion.button>
 
               <button
@@ -189,26 +257,52 @@ function CommentList({ comments, onReaction, onReply, onDelete, currentAuthor, c
               </button>
 
               {c.author === currentAuthor && (
-                <button
-                  onClick={() => onDelete(c.id)}
-                  className="flex items-center gap-1 bg-red-100 hover:bg-red-200 text-red-700 px-2 py-1 rounded transition"
-                >
-                  <Image src="/delete.svg" alt="Delete" width={16} height={16} />
-                  Delete
-                </button>
+                <>
+                  <button
+                    onClick={() => {
+                      setEditing(c.id);
+                      setEditText(c.text);
+                    }}
+                    className="flex items-center gap-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-700 px-2 py-1 rounded transition"
+                  >
+                    <Image src="/edit.svg" alt="Edit" width={16} height={16} />
+                    Edit
+                  </button>
+
+                  <button
+                    onClick={() => onDelete(c.id)}
+                    className="flex items-center gap-1 bg-red-100 hover:bg-red-200 text-red-700 px-2 py-1 rounded transition"
+                  >
+                    <Image src="/delete.svg" alt="Delete" width={16} height={16} />
+                    Delete
+                  </button>
+                </>
               )}
             </div>
 
             {c.replies?.length > 0 && (
-              <div className="ml-6 mt-2 border-l pl-3 space-y-2">
-                <CommentList
-                  comments={c.replies}
-                  onReaction={onReaction}
-                  onReply={onReply}
-                  onDelete={onDelete}
-                  currentAuthor={currentAuthor}
-                  clickedButton={clickedButton}
-                />
+              <div className="ml-6 mt-2">
+                <button
+                  onClick={() => toggleCollapse(c.id)}
+                  className="text-xs text-blue-600 underline mb-1"
+                >
+                  {collapsed[c.id] ? `Show replies (${c.replies.length})` : `Hide replies (${c.replies.length})`}
+                </button>
+
+                {!collapsed[c.id] && (
+                  <div className="border-l pl-3 space-y-2">
+                    <CommentList
+                      comments={c.replies}
+                      onReaction={onReaction}
+                      onReply={onReply}
+                      onEdit={onEdit}
+                      onDelete={onDelete}
+                      currentAuthor={currentAuthor}
+                      clickedButton={clickedButton}
+                      timeAgo={timeAgo}
+                    />
+                  </div>
+                )}
               </div>
             )}
           </motion.div>
