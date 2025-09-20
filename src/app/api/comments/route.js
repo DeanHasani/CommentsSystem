@@ -2,7 +2,6 @@ import { v4 as uuidv4 } from "uuid";
 
 let comments = [];
 
-// --- helpers ---
 const addReplyNested = (arr, parentId, newComment) =>
   arr.map((c) => {
     if (c.id === parentId) return { ...c, replies: [newComment, ...(c.replies || [])] };
@@ -29,7 +28,7 @@ const removeCommentNested = (arr, id, author) =>
       replies: c.replies ? removeCommentNested(c.replies, id, author) : [],
     }));
 
-// --- API ---
+
 export async function GET() {
   return new Response(JSON.stringify(comments), { status: 200 });
 }
@@ -50,7 +49,7 @@ export async function POST(req) {
   if (parentId) {
     comments = addReplyNested(comments, parentId, newComment);
   } else {
-    comments = [newComment, ...comments]; // newest-first
+    comments = [newComment, ...comments]; 
   }
 
   return new Response(JSON.stringify(newComment), { status: 201 });
